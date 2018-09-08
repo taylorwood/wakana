@@ -1,9 +1,9 @@
 (ns wakana.core
-  (:use [overtone.live]))
+  (:require [overtone.live :refer :all]))
 
-; Initialize Tempo
-(def bpm (atom 120))
-(def metro (metronome @bpm)); (metro) -> current beat number
+;; Initialize Tempo
+(def bpm (atom 140))
+(def metro (metronome @bpm)) ;; (metro) -> current beat number
 (def beat-dur (atom (/ 60.0 @bpm)))
 
 (defn reset-bpm!
@@ -30,15 +30,16 @@
                           (apply max soprano-range)))
 
 (defn in-range?
-  [pitch pitch-range]
-  (and (>= pitch (apply min pitch-range))
-       (<= pitch (apply max pitch-range))))
+  "Returns true if n is between min and max of nums, inclusive."
+  [n nums]
+  (let [[lo hi] (apply (juxt min max) nums)]
+    (<= lo n hi)))
 
 (def scale-degrees [:i :ii :iii :iv :v :vi :vii])
 
 (defn scale-chords
   [tonic-key]
-  (map (fn [midi-val chord-type] (chord midi-val chord-type))
+  (map chord
        (degrees->pitches scale-degrees :major tonic-key)
        [:major :minor :minor :major :major :minor :dim]))
 
@@ -47,16 +48,13 @@
   (let [chords (scale-chords tonic-key)]
     (repeatedly #(rand-nth chords))))
 
-(defn play-pitches-at
-  [beat pitches & opts]
-  (let [pitches' (if (coll? pitches) pitches [pitches])]
-    (at beat
-        (doseq [pitch pitches']
-          (apply sinw (cons pitch opts))))))
+(defn- collectionize [x] (if (coll? x) x [x]))
 
-(defn rand-pitches
-  [pitches]
-  (repeatedly #(rand-nth pitches)))
+(defn play-pitches-at
+  [beat pitch-or-pitches & opts]
+  (at beat
+    (doseq [pitch (collectionize pitch-or-pitches)]
+      (apply sinw pitch opts))))
 
 (defn play-melody
   [melody]
@@ -67,14 +65,15 @@
 (defn all-key-pitches
   "Given a collection of pitches, keep those in the provided key"
   [tonic-key pitches]
-  (let [pitches' (if (coll? pitches) pitches [pitches])]
-    (filter (set (scale-field tonic-key)) pitches')))
+  (let [key-pitches (set (scale-field tonic-key))]
+    (->> (collectionize pitches)
+         (filter key-pitches))))
 
 (defn consonant?
   [pitch chord]
-  (let [chord-semitones (map #(mod % 12) chord)
+  (let [chord-semitones (set (map #(mod % 12) chord))
         pitch-semitone (mod pitch 12)]
-    ((set chord-semitones) pitch-semitone)))
+    (chord-semitones pitch-semitone)))
 
 (defn nearby-consonant-pitches
   [pitch next-chord pitch-range]
@@ -83,47 +82,47 @@
          (filter #(in-range? % pitch-range))
          (filter #(consonant? % next-chord)))))
 
-; use a generic fn that takes an init-fn and a next-fn as args?
+(defn stateful-iterate
+  ([f x next-state]
+   (stateful-iterate (f x) f (next-state x) next-state))
+  ([value f x next-state]
+   (lazy-seq
+     (cons value
+           (stateful-iterate (f x value) f (next-state x) next-state)))))
 
 (defn smooth-melody
-  ([chords pitch-range]
-   (smooth-melody (->> pitch-range
-                       (filter #(consonant? % (first chords)))
-                       (rand-nth))
-                  (rest chords)
-                  pitch-range))
-  ([last-pitch chords pitch-range]
-   (lazy-seq
-     (cons last-pitch
-           (smooth-melody (-> last-pitch
-                              (nearby-consonant-pitches (first chords) pitch-range)
-                              (rand-nth))
-                          (rest chords)
-                          pitch-range)))))
+  [chords pitch-range]
+  (stateful-iterate
+    (fn
+      ([chords]
+       (->> pitch-range
+            (filter #(consonant? % (first chords)))
+            (rand-nth)))
+      ([chords last-pitch]
+       (-> last-pitch
+           (nearby-consonant-pitches (first chords) pitch-range)
+           (rand-nth))))
+    chords
+    rest))
 
-(defn smooth-harmony
-  ([chords melody pitch-range]
-   (smooth-harmony (->> pitch-range
-                        (filter #(consonant? % (first chords)))
-                        (filter #(not= (mod (first melody) 12)
-                                       (mod % 12)))
-                        (rand-nth))
-                    (rest chords)
-                    (rest melody)
-                    pitch-range))
-  ([last-pitch chords melody pitch-range]
-   (lazy-seq
-     (cons last-pitch
-           (smooth-harmony (-> last-pitch
-                               (nearby-consonant-pitches (first chords) pitch-range)
-                               ((fn [neighbors]
-                                  (filter #(not= (mod (first melody) 12)
-                                                 (mod % 12))
-                                          neighbors)))
-                               (rand-nth))
-                            (rest chords)
-                            (rest melody)
-                            pitch-range)))))
+(defn smooth-harmony [chords melody pitch-range]
+  (stateful-iterate
+    (fn
+      ([[chords melody]]
+       (->> pitch-range
+            (filter #(consonant? % (first chords)))
+            (filter #(not= (mod (first melody) 12)
+                           (mod % 12)))
+            (rand-nth)))
+      ([[chords melody] last-pitch]
+       (as-> last-pitch $
+             (nearby-consonant-pitches $ (first chords) pitch-range)
+             (filter #(not= (mod (first melody) 12)
+                            (mod % 12))
+                     $)
+             (rand-nth $))))
+    [chords melody]
+    (fn [[chords melody]] [(rest chords) (rest melody)])))
 
 (defn play-piece
   [chords melody]
@@ -142,30 +141,26 @@
         harmony (smooth-harmony chords melody alto-range)]
     (play-piece harmony melody)))
 
-(defn smooth-counterpoint
-  ([chords melody pitch-range]
-   (smooth-counterpoint (->> pitch-range
-                             (filter #(consonant? % (first chords)))
-                             (shuffle)
-                             (take 2))
-                        (rest chords)
-                        (rest melody)
-                        pitch-range))
-  ([last-pitch chords melody pitch-range]
-   (lazy-seq
-     (cons last-pitch
-           (smooth-counterpoint (->> (nearby-consonant-pitches (second last-pitch) (first chords) pitch-range)
-                                     (filter #(not= (first melody) %))
-                                     (shuffle)
-                                     (take 2))
-                                (rest chords)
-                                (rest melody)
-                                pitch-range)))))
+(defn smooth-counterpoint [chords melody pitch-range]
+  (stateful-iterate
+    (fn
+      ([[chords _melody]]
+       (->> pitch-range
+            (filter #(consonant? % (first chords)))
+            (shuffle)
+            (take 2)))
+      ([[chords melody] last-pitch]
+       (->> (nearby-consonant-pitches (second last-pitch) (first chords) pitch-range)
+            (filter #(not= (first melody) %))
+            (shuffle)
+            (take 2))))
+    [chords melody]
+    (fn [[chords melody]] [(rest chords) (rest melody)])))
 
 (defn play-counterpoint
   [accompaniment melody]
   (let [beat (metro)]
-    (play-pitches-at (metro beat) (-> accompaniment first first) :vol 0.25 :sustain (* 2 @beat-dur))
+    (play-pitches-at (metro beat) (-> accompaniment ffirst) :vol 0.25 :sustain (* 2 @beat-dur))
     (play-pitches-at (metro (+ beat 2)) (-> accompaniment first second) :vol 0.25 :sustain (* 2 @beat-dur))
     (play-pitches-at (metro beat) (first melody) :vol 0.25 :sustain (* 4 @beat-dur))
     (apply-by (metro (+ 4 beat))
@@ -179,3 +174,7 @@
         melody (smooth-melody chords soprano-range)
         accompaniment (smooth-counterpoint chords melody alto-range)]
     (play-counterpoint accompaniment melody)))
+
+(comment
+  (gen-counterpoint)
+  (stop))
