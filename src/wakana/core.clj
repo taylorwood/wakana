@@ -82,47 +82,38 @@
          (filter #(in-range? % pitch-range))
          (filter #(consonant? % next-chord)))))
 
-(defn stateful-iterate
-  ([f x next-state]
-   (stateful-iterate (f x) f (next-state x) next-state))
-  ([value f x next-state]
-   (lazy-seq
-     (cons value
-           (stateful-iterate (f x value) f (next-state x) next-state)))))
-
-(defn smooth-melody
-  [chords pitch-range]
-  (stateful-iterate
-    (fn
-      ([chords]
-       (->> pitch-range
-            (filter #(consonant? % (first chords)))
-            (rand-nth)))
-      ([chords last-pitch]
-       (-> last-pitch
-           (nearby-consonant-pitches (first chords) pitch-range)
-           (rand-nth))))
-    chords
-    rest))
+(defn smooth-melody [chords pitch-range]
+  (let [init-state [(->> pitch-range
+                         (filter #(consonant? % (first chords)))
+                         (rand-nth))
+                    (rest chords)]]
+    (->> init-state
+         (iterate (fn [[last-pitch chords]]
+                    [(-> last-pitch
+                         (nearby-consonant-pitches (first chords) pitch-range)
+                         (rand-nth))
+                     (rest chords)]))
+         (map first))))
 
 (defn smooth-harmony [chords melody pitch-range]
-  (stateful-iterate
-    (fn
-      ([[chords melody]]
-       (->> pitch-range
-            (filter #(consonant? % (first chords)))
-            (filter #(not= (mod (first melody) 12)
-                           (mod % 12)))
-            (rand-nth)))
-      ([[chords melody] last-pitch]
-       (as-> last-pitch $
-             (nearby-consonant-pitches $ (first chords) pitch-range)
-             (filter #(not= (mod (first melody) 12)
-                            (mod % 12))
-                     $)
-             (rand-nth $))))
-    [chords melody]
-    (fn [[chords melody]] [(rest chords) (rest melody)])))
+  (let [init-state [(->> pitch-range
+                         (filter #(consonant? % (first chords)))
+                         (filter #(not= (mod (first melody) 12)
+                                        (mod % 12)))
+                         (rand-nth))
+                    (rest chords)
+                    (rest melody)]]
+    (->> init-state
+         (iterate (fn [[last-pitch chords melody]]
+                    [(as-> last-pitch $
+                           (nearby-consonant-pitches $ (first chords) pitch-range)
+                           (filter #(not= (mod (first melody) 12)
+                                          (mod % 12))
+                                   $)
+                           (rand-nth $))
+                     (rest chords)
+                     (rest melody)]))
+         (map first))))
 
 (defn play-piece
   [chords melody]
@@ -142,20 +133,22 @@
     (play-piece harmony melody)))
 
 (defn smooth-counterpoint [chords melody pitch-range]
-  (stateful-iterate
-    (fn
-      ([[chords _melody]]
-       (->> pitch-range
-            (filter #(consonant? % (first chords)))
-            (shuffle)
-            (take 2)))
-      ([[chords melody] last-pitch]
-       (->> (nearby-consonant-pitches (second last-pitch) (first chords) pitch-range)
-            (filter #(not= (first melody) %))
-            (shuffle)
-            (take 2))))
-    [chords melody]
-    (fn [[chords melody]] [(rest chords) (rest melody)])))
+  (let [init-state [(->> pitch-range
+                         (filter #(consonant? % (first chords)))
+                         (shuffle)
+                         (take 2))
+                    (rest chords)
+                    (rest melody)]]
+    (->> init-state
+         (iterate
+           (fn [[last-pitch chords melody]]
+             [(->> (nearby-consonant-pitches (second last-pitch) (first chords) pitch-range)
+                   (filter #(not= (first melody) %))
+                   (shuffle)
+                   (take 2))
+              (rest chords)
+              (rest melody)]))
+         (map first))))
 
 (defn play-counterpoint
   [accompaniment melody]
