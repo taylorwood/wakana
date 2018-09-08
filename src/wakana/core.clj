@@ -1,5 +1,6 @@
 (ns wakana.core
-  (:require [overtone.live :refer :all]))
+  (:require [overtone.live :refer :all]
+            [wakana.util :refer [itermap]]))
 
 ;; Initialize Tempo
 (def bpm (atom 140))
@@ -20,7 +21,7 @@
 (defn sinw
   [music-note & opts]
   (let [tone (midi->hz (note music-note))]
-    (apply sin-wave (cons tone opts))))
+    (apply sin-wave tone opts)))
 
 (def bass-range    (range (note :e2) (inc (note :c4))))
 (def tenor-range   (range (note :c3) (inc (note :c5))))
@@ -82,47 +83,39 @@
          (filter #(in-range? % pitch-range))
          (filter #(consonant? % next-chord)))))
 
-(defn stateful-iterate
-  ([f x next-state]
-   (stateful-iterate (f x) f (next-state x) next-state))
-  ([value f x next-state]
-   (lazy-seq
-     (cons value
-           (stateful-iterate (f x value) f (next-state x) next-state)))))
-
-(defn smooth-melody
-  [chords pitch-range]
-  (stateful-iterate
+(defn smooth-melody [chords pitch-range]
+  (sequence
+   (itermap
     (fn
-      ([chords]
+      ([chord]
        (->> pitch-range
-            (filter #(consonant? % (first chords)))
+            (filter #(consonant? % chord))
             (rand-nth)))
-      ([chords last-pitch]
+      ([last-pitch chord]
        (-> last-pitch
-           (nearby-consonant-pitches (first chords) pitch-range)
-           (rand-nth))))
-    chords
-    rest))
+           (nearby-consonant-pitches chord pitch-range)
+           (rand-nth)))))
+   chords))
 
 (defn smooth-harmony [chords melody pitch-range]
-  (stateful-iterate
+  (sequence
+   (itermap
     (fn
-      ([[chords melody]]
+      ([chord melody]
        (->> pitch-range
-            (filter #(consonant? % (first chords)))
-            (filter #(not= (mod (first melody) 12)
+            (filter #(consonant? % chord))
+            (filter #(not= (mod melody 12)
                            (mod % 12)))
             (rand-nth)))
-      ([[chords melody] last-pitch]
+      ([last-pitch chord melody]
        (as-> last-pitch $
-             (nearby-consonant-pitches $ (first chords) pitch-range)
-             (filter #(not= (mod (first melody) 12)
-                            (mod % 12))
-                     $)
-             (rand-nth $))))
-    [chords melody]
-    (fn [[chords melody]] [(rest chords) (rest melody)])))
+         (nearby-consonant-pitches $ chord pitch-range)
+         (filter #(not= (mod melody 12)
+                        (mod % 12))
+                 $)
+         (rand-nth $)))))
+   chords
+   melody))
 
 (defn play-piece
   [chords melody]
@@ -142,20 +135,21 @@
     (play-piece harmony melody)))
 
 (defn smooth-counterpoint [chords melody pitch-range]
-  (stateful-iterate
+  (sequence
+   (itermap
     (fn
-      ([[chords _melody]]
+      ([chord _melody]
        (->> pitch-range
-            (filter #(consonant? % (first chords)))
+            (filter #(consonant? % chord))
             (shuffle)
             (take 2)))
-      ([[chords melody] last-pitch]
-       (->> (nearby-consonant-pitches (second last-pitch) (first chords) pitch-range)
-            (filter #(not= (first melody) %))
+      ([last-pitch chord melody]
+       (->> (nearby-consonant-pitches (second last-pitch) chord pitch-range)
+            (filter #(not= melody %))
             (shuffle)
-            (take 2))))
-    [chords melody]
-    (fn [[chords melody]] [(rest chords) (rest melody)])))
+            (take 2))))) ;; TODO bug? seems like sometimes there are less than 2!
+   chords
+   melody))
 
 (defn play-counterpoint
   [accompaniment melody]
@@ -176,5 +170,6 @@
     (play-counterpoint accompaniment melody)))
 
 (comment
+  (gen-piece)
   (gen-counterpoint)
   (stop))
